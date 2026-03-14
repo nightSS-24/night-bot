@@ -1,8 +1,8 @@
 import { verifyKey } from "discord-interactions"
 
 const PUBLIC_KEY = process.env.PUBLIC_KEY
-const HELPER_ROLE = "1482454128029601954"
-const LEGACY_ROLE = "1482456277421527292"
+const HELPER_ROLE = "1481673722682150996"
+const LEGACY_ROLE = "1480479375328673812"
 
 let borrowed = {}
 
@@ -15,7 +15,7 @@ export default async function handler(req, res) {
  const valid = verifyKey(body, signature, timestamp, PUBLIC_KEY)
 
  if (!valid) {
-  return res.status(401).send("invalid request signature")
+  return res.status(401).send("invalid request")
  }
 
  const interaction = req.body
@@ -60,6 +60,27 @@ export default async function handler(req, res) {
    })
   }
 
+  if (name === "borrowers") {
+
+   if (Object.keys(borrowed).length === 0) {
+    return res.json({
+     type: 4,
+     data: { content: "no active borrowers" }
+    })
+   }
+
+   let list = ""
+
+   for (const user in borrowed) {
+    list += `<@${user}> borrowed **${borrowed[user]}**\n`
+   }
+
+   return res.json({
+    type: 4,
+    data: { content: list }
+   })
+  }
+
   if (name === "giverole") {
 
    const member = interaction.data.options[0].value
@@ -93,7 +114,10 @@ export default async function handler(req, res) {
 
    return res.json({
     type: 7,
-    data: { content: `<@${user}> borrowed **${item}**` }
+    data: {
+     content: `<@${user}> borrowed **${item}**`,
+     components: []
+    }
    })
   }
 
@@ -104,7 +128,10 @@ export default async function handler(req, res) {
 
    return res.json({
     type: 7,
-    data: { content: `request from <@${user}> declined` }
+    data: {
+     content: `request from <@${user}> declined`,
+     components: []
+    }
    })
   }
  }
