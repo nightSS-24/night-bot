@@ -1,8 +1,8 @@
 import { verifyKey } from "discord-interactions"
 
 const PUBLIC_KEY = process.env.PUBLIC_KEY
-const HELPER_ROLE = "1481673722682150996"
-const LEGACY_ROLE = "1480479375328673812"
+const HELPER_ROLE = "1482454128029601954"
+const LEGACY_ROLE = "1482456277421527292"
 
 let borrowed = {}
 
