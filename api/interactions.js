@@ -4,12 +4,11 @@ const PUBLIC_KEY = process.env.PUBLIC_KEY
 const BOT_TOKEN = process.env.BOT_TOKEN
 
 const HELPER_ROLE = "1481673722682150996"
-const LEGACY_ROLE = "1480479375328673812"
 
 let borrowed = {}
 let sessions = {}
 
-async function discord(url, method, body) {
+async function api(url, method, body) {
  return fetch(`https://discord.com/api/v10${url}`, {
   method,
   headers: {
@@ -27,7 +26,7 @@ export default async function handler(req, res) {
  const body = JSON.stringify(req.body)
 
  if (!verifyKey(body, signature, timestamp, PUBLIC_KEY)) {
-  return res.status(401).send("bad signature")
+  return res.status(401).send("invalid signature")
  }
 
  const interaction = req.body
@@ -41,6 +40,7 @@ export default async function handler(req, res) {
   const cmd = interaction.data.name
   const user = interaction.member.user.id
   const guild = interaction.guild_id
+  const channel = interaction.channel_id
 
   if (cmd === "request") {
 
@@ -49,7 +49,7 @@ export default async function handler(req, res) {
    return res.json({
     type: 4,
     data: {
-     content: `<@&${HELPER_ROLE}> request from <@${user}> for **${item}**`,
+     content: `<@${user}> requested **${item}**`,
      components: [{
       type: 1,
       components: [
@@ -64,7 +64,7 @@ export default async function handler(req, res) {
   if (cmd === "borrowers") {
 
    if (!Object.keys(borrowed).length) {
-    return res.json({ type: 4, data: { content: "no borrowers" } })
+    return res.json({ type: 4, data: { content: "no active borrowers" } })
    }
 
    let text = ""
@@ -78,54 +78,86 @@ export default async function handler(req, res) {
 
   if (cmd === "given") {
 
-   const channel = interaction.channel_id
    const session = sessions[channel]
 
    if (!session) {
-    return res.json({ type: 4, data: { content: "invalid channel" } })
+    return res.json({ type: 4, data: { content: "not a session channel" } })
    }
 
-   borrowed[session.user] = {
-    item: session.item,
-    helper: session.helper
+   if (session.type === "request") {
+
+    borrowed[session.user] = {
+     item: session.item,
+     helper: session.helper
+    }
+
+    await api(`/channels/${channel}`, "PATCH", {
+     permission_overwrites: [
+      { id: session.user, deny: "2048" }
+     ]
+    })
+
+    return res.json({
+     type: 4,
+     data: { content: "item marked as given • channel locked" }
+    })
    }
 
-   session.locked = true
+   if (session.type === "return") {
 
-   return res.json({
-    type: 4,
-    data: { content: `item **${session.item}** given to <@${session.user}>` }
-   })
+    delete borrowed[session.user]
+
+    await api(`/channels/${channel}`, "DELETE")
+
+    return res.json({
+     type: 4,
+     data: { content: "return completed" }
+    })
+   }
   }
 
   if (cmd === "decline") {
 
-   const channel = interaction.channel_id
    const session = sessions[channel]
 
    if (!session) {
-    return res.json({ type: 4, data: { content: "invalid session" } })
+    return res.json({ type: 4, data: { content: "not a session channel" } })
    }
 
-   await discord(`/users/@me/channels`, "POST", { recipient_id: session.user })
+   await api(`/channels/${channel}`, "DELETE")
 
-   await discord(`/channels/${channel}`, "DELETE")
+   await api(`/users/@me/channels`, "POST", {
+    recipient_id: session.user
+   })
 
-   return res.json({ type: 4, data: { content: "request declined" } })
+   return res.json({
+    type: 4,
+    data: { content: "request declined" }
+   })
   }
 
   if (cmd === "return") {
 
-   const item = interaction.data.options[0].value
    const info = borrowed[user]
 
-   if (!info || info.item !== item) {
-    return res.json({ type: 4, data: { content: "not borrowed" } })
+   if (!info) {
+    return res.json({ type: 4, data: { content: "nothing borrowed" } })
    }
 
    return res.json({
     type: 4,
-    data: { content: "return request sent to helper" }
+    data: {
+     content: `return request for **${info.item}**`,
+     components: [{
+      type: 1,
+      components: [{
+       type: 2,
+       label: "Claim",
+       style: 1,
+       custom_id: `claim_${user}`
+      }]
+     }]
+    }
    })
   }
  }
@@ -133,16 +165,21 @@ export default async function handler(req, res) {
  if (interaction.type === 3) {
 
   const id = interaction.data.custom_id
-  const guild = interaction.guild_id
   const helper = interaction.member.user.id
+  const guild = interaction.guild_id
 
   if (id.startsWith("accept_")) {
 
-   const parts = id.split("_")
-   const user = parts[1]
-   const item = parts[2]
+   const [_, user, item] = id.split("_")
 
-   const channel = await discord(`/guilds/${guild}/channels`, "POST", {
+   if (Object.values(sessions).find(s => s.user === user && s.item === item)) {
+    return res.json({
+     type: 4,
+     data: { content: "already accepted", flags: 64 }
+    })
+   }
+
+   const channel = await api(`/guilds/${guild}/channels`, "POST", {
     name: `borrow-${user}`,
     type: 0,
     permission_overwrites: [
@@ -154,25 +191,59 @@ export default async function handler(req, res) {
 
    sessions[channel.id] = {
     user,
-    item,
     helper,
-    messages: 0,
-    locked: false
+    item,
+    channel: channel.id,
+    type: "request"
    }
 
    return res.json({
     type: 7,
-    data: { content: `channel created <#${channel.id}>`, components: [] }
+    data: {
+     content: `accepted by <@${helper}> • channel <#${channel.id}>`,
+     components: []
+    }
    })
   }
 
-  if (id.startsWith("decline_")) {
+  if (id.startsWith("claim_")) {
 
    const user = id.split("_")[1]
+   const info = borrowed[user]
+
+   const helper = interaction.member.user.id
+
+   if (helper !== info.helper) {
+    return res.json({
+     type: 4,
+     data: { content: "only original helper can claim", flags: 64 }
+    })
+   }
+
+   const channel = await api(`/guilds/${interaction.guild_id}/channels`, "POST", {
+    name: `return-${user}`,
+    type: 0,
+    permission_overwrites: [
+     { id: interaction.guild_id, deny: "1024" },
+     { id: user, allow: "1024" },
+     { id: HELPER_ROLE, allow: "1024" }
+    ]
+   }).then(r => r.json())
+
+   sessions[channel.id] = {
+    user,
+    helper,
+    item: info.item,
+    channel: channel.id,
+    type: "return"
+   }
 
    return res.json({
     type: 7,
-    data: { content: `request from <@${user}> declined`, components: [] }
+    data: {
+     content: `return channel created <#${channel.id}>`,
+     components: []
+    }
    })
   }
  }
