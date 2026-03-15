@@ -3,10 +3,13 @@ import { verifyKey } from "discord-interactions"
 const PUBLIC_KEY = process.env.PUBLIC_KEY
 const BOT_TOKEN = process.env.BOT_TOKEN
 
-const HELPER_ROLE = "1481673722682150996"
+const CATEGORY_ID = "1482618433274249356"
+const LOG_CHANNEL = "1482618594260029490"
+const HELPER_ROLE = "1482454128029601954"
 
 let borrowed = {}
 let sessions = {}
+let ticket = 0
 
 async function api(url, method, body) {
  return fetch(`https://discord.com/api/v10${url}`, {
@@ -17,6 +20,15 @@ async function api(url, method, body) {
   },
   body: body ? JSON.stringify(body) : undefined
  })
+}
+
+function nextTicket() {
+ ticket++
+ return String(ticket).padStart(4, "0")
+}
+
+async function log(text) {
+ await api(`/channels/${LOG_CHANNEL}/messages`, "POST", { content: text })
 }
 
 export default async function handler(req, res) {
@@ -39,6 +51,7 @@ export default async function handler(req, res) {
 
   const cmd = interaction.data.name
   const user = interaction.member.user.id
+  const username = interaction.member.user.username
   const guild = interaction.guild_id
   const channel = interaction.channel_id
 
@@ -70,7 +83,8 @@ export default async function handler(req, res) {
    let text = ""
 
    for (const u in borrowed) {
-    text += `<@${u}> → ${borrowed[u].item}\n`
+    const b = borrowed[u]
+    text += `<@${u}> → **${b.item}** (helper <@${b.helper}>)\n`
    }
 
    return res.json({ type: 4, data: { content: text } })
@@ -97,6 +111,8 @@ export default async function handler(req, res) {
      ]
     })
 
+    await log(`@${session.user} borrowed **${session.item}** from <@${session.helper}>`)
+
     return res.json({
      type: 4,
      data: { content: "item marked as given • channel locked" }
@@ -106,6 +122,8 @@ export default async function handler(req, res) {
    if (session.type === "return") {
 
     delete borrowed[session.user]
+
+    await log(`@${session.user} returned **${session.item}** to <@${session.helper}>`)
 
     await api(`/channels/${channel}`, "DELETE")
 
@@ -124,11 +142,9 @@ export default async function handler(req, res) {
     return res.json({ type: 4, data: { content: "not a session channel" } })
    }
 
-   await api(`/channels/${channel}`, "DELETE")
+   await log(`<@${session.helper}> declined **${session.item}** for <@${session.user}>`)
 
-   await api(`/users/@me/channels`, "POST", {
-    recipient_id: session.user
-   })
+   await api(`/channels/${channel}`, "DELETE")
 
    return res.json({
     type: 4,
@@ -166,6 +182,7 @@ export default async function handler(req, res) {
 
   const id = interaction.data.custom_id
   const helper = interaction.member.user.id
+  const helperName = interaction.member.user.username
   const guild = interaction.guild_id
 
   if (id.startsWith("accept_")) {
@@ -179,13 +196,17 @@ export default async function handler(req, res) {
     })
    }
 
+   const number = nextTicket()
+   const name = `${interaction.member.user.username}-${number}`
+
    const channel = await api(`/guilds/${guild}/channels`, "POST", {
-    name: `borrow-${user}`,
+    name,
+    parent_id: CATEGORY_ID,
     type: 0,
     permission_overwrites: [
      { id: guild, deny: "1024" },
      { id: user, allow: "1024" },
-     { id: HELPER_ROLE, allow: "1024" }
+     { id: helper, allow: "1024" }
     ]
    }).then(r => r.json())
 
@@ -194,8 +215,11 @@ export default async function handler(req, res) {
     helper,
     item,
     channel: channel.id,
-    type: "request"
+    type: "request",
+    messages: 0
    }
+
+   await log(`<@${helper}> accepted **${item}** request from <@${user}>`)
 
    return res.json({
     type: 7,
@@ -220,13 +244,17 @@ export default async function handler(req, res) {
     })
    }
 
+   const number = nextTicket()
+   const name = `return-${number}`
+
    const channel = await api(`/guilds/${interaction.guild_id}/channels`, "POST", {
-    name: `return-${user}`,
+    name,
+    parent_id: CATEGORY_ID,
     type: 0,
     permission_overwrites: [
      { id: interaction.guild_id, deny: "1024" },
      { id: user, allow: "1024" },
-     { id: HELPER_ROLE, allow: "1024" }
+     { id: helper, allow: "1024" }
     ]
    }).then(r => r.json())
 
@@ -235,8 +263,11 @@ export default async function handler(req, res) {
     helper,
     item: info.item,
     channel: channel.id,
-    type: "return"
+    type: "return",
+    messages: 0
    }
+
+   await log(`<@${helper}> claimed return of **${info.item}** from <@${user}>`)
 
    return res.json({
     type: 7,
