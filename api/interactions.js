@@ -1,281 +1,406 @@
 import { verifyKey } from "discord-interactions"
+import { MongoClient } from "mongodb"
 
-const PUBLIC_KEY = process.env.PUBLIC_KEY
-const BOT_TOKEN = process.env.BOT_TOKEN
+const {
+  PUBLIC_KEY,
+  BOT_TOKEN,
+  CATEGORY_ID,
+  LOG_CHANNEL,
+  MONGO_URI,
+  COMMUNITY_ROLE,
+  HELPER_ROLE
+} = process.env
 
-const CATEGORY_ID = "1482618433274249356"
-const LOG_CHANNEL = "1482618594260029490"
-const HELPER_ROLE = "1482454128029601954"
+const client = new MongoClient(MONGO_URI)
+await client.connect()
 
-let borrowed = {}
-let sessions = {}
+const db = client.db("system")
+
+const Borrow = db.collection("borrowed")
+const Session = db.collection("sessions")
+const Users = db.collection("users")
+const Logs = db.collection("logs")
+const Banned = db.collection("banned")
+
+const cooldowns = new Map()
+const spamTracker = new Map()
+
+const COOLDOWN = 10
+const SPAM_LIMIT = 5
+const SPAM_WINDOW = 20000
+const BORROW_DURATION = 2 * 60 * 60 * 1000
+
+const api = async (url, method = "GET", body) => {
+  const res = await fetch(`https://discord.com/api/v10${url}`, {
+    method,
+    headers: {
+      Authorization: `Bot ${BOT_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : undefined
+  })
+  return res.json()
+}
+
+const reply = (content, extra = {}) => ({
+  type: 4,
+  data: { content, ...extra }
+})
+
+const update = (content, extra = {}) => ({
+  type: 7,
+  data: { content, ...extra }
+})
+
+function checkAccess(member) {
+  const roles = member.roles || []
+  return roles.includes(COMMUNITY_ROLE) || roles.includes(HELPER_ROLE)
+}
+
+function checkCooldown(user, cmd) {
+  const key = `${user}_${cmd}`
+  const now = Date.now()
+  if (cooldowns.has(key)) {
+    const expire = cooldowns.get(key)
+    if (now < expire) return Math.ceil((expire - now) / 1000)
+  }
+  cooldowns.set(key, now + COOLDOWN * 1000)
+  return 0
+}
+
+function trackSpam(user) {
+  const now = Date.now()
+  if (!spamTracker.has(user)) spamTracker.set(user, [])
+  const arr = spamTracker.get(user).filter(t => now - t < SPAM_WINDOW)
+  arr.push(now)
+  spamTracker.set(user, arr)
+  return arr.length
+}
+
+async function getUser(user) {
+  let data = await Users.findOne({ user })
+  if (!data) {
+    data = {
+      user,
+      trust: 50,
+      totalBorrowed: 0,
+      returnedOnTime: 0,
+      lateReturns: 0,
+      violations: 0
+    }
+    await Users.insertOne(data)
+  }
+  return data
+}
+
+async function log(data) {
+  await Logs.insertOne({ ...data, timestamp: new Date() })
+}
+
 let ticket = 0
+const nextTicket = () => String(++ticket).padStart(4, "0")
 
-async function api(url, method, body) {
- return fetch(`https://discord.com/api/v10${url}`, {
-  method,
-  headers: {
-   Authorization: `Bot ${BOT_TOKEN}`,
-   "Content-Type": "application/json"
-  },
-  body: body ? JSON.stringify(body) : undefined
- })
+const createChannel = async (guild, name, user, helper) => {
+  return api(`/guilds/${guild}/channels`, "POST", {
+    name,
+    parent_id: CATEGORY_ID,
+    type: 0,
+    permission_overwrites: [
+      { id: guild, deny: "1024" },
+      { id: user, allow: "1024" },
+      { id: helper, allow: "1024" }
+    ]
+  })
 }
 
-function nextTicket() {
- ticket++
- return String(ticket).padStart(4, "0")
-}
+const restricted = [
+  "accept",
+  "decline",
+  "ban-user",
+  "timeout",
+  "trusted",
+  "search",
+  "reminder"
+]
 
-async function log(text) {
- await api(`/channels/${LOG_CHANNEL}/messages`, "POST", { content: text })
+function formatTime(ms) {
+  const h = Math.floor(ms / 3600000)
+  const m = Math.floor((ms % 3600000) / 60000)
+  return `${h}h ${m}m`
 }
 
 export default async function handler(req, res) {
 
- const signature = req.headers["x-signature-ed25519"]
- const timestamp = req.headers["x-signature-timestamp"]
- const body = JSON.stringify(req.body)
+  const signature = req.headers["x-signature-ed25519"]
+  const timestamp = req.headers["x-signature-timestamp"]
+  const body = JSON.stringify(req.body)
 
- if (!verifyKey(body, signature, timestamp, PUBLIC_KEY)) {
-  return res.status(401).send("invalid signature")
- }
-
- const interaction = req.body
-
- if (interaction.type === 1) {
-  return res.json({ type: 1 })
- }
-
- if (interaction.type === 2) {
-
-  const cmd = interaction.data.name
-  const user = interaction.member.user.id
-  const username = interaction.member.user.username
-  const guild = interaction.guild_id
-  const channel = interaction.channel_id
-
-  if (cmd === "request") {
-
-   const item = interaction.data.options[0].value
-
-   return res.json({
-    type: 4,
-    data: {
-     content: `<@${user}> requested **${item}**`,
-     components: [{
-      type: 1,
-      components: [
-       { type: 2, label: "Accept", style: 3, custom_id: `accept_${user}_${item}` },
-       { type: 2, label: "Decline", style: 4, custom_id: `decline_${user}_${item}` }
-      ]
-     }]
-    }
-   })
+  if (!verifyKey(body, signature, timestamp, PUBLIC_KEY)) {
+    return res.status(401).send("invalid")
   }
 
-  if (cmd === "borrowers") {
+  const interaction = req.body
 
-   if (!Object.keys(borrowed).length) {
-    return res.json({ type: 4, data: { content: "no active borrowers" } })
-   }
-
-   let text = ""
-
-   for (const u in borrowed) {
-    const b = borrowed[u]
-    text += `<@${u}> → **${b.item}** (helper <@${b.helper}>)\n`
-   }
-
-   return res.json({ type: 4, data: { content: text } })
+  if (interaction.type === 1) {
+    return res.json({ type: 1 })
   }
 
-  if (cmd === "given") {
+  const user = interaction.member?.user?.id
 
-   const session = sessions[channel]
+  if (interaction.type === 2) {
 
-   if (!session) {
-    return res.json({ type: 4, data: { content: "not a session channel" } })
-   }
+    const cmd = interaction.data.name
 
-   if (session.type === "request") {
+    const banned = await Banned.findOne({ user })
+    if (banned) return res.json(reply("access denied", { flags: 64 }))
 
-    borrowed[session.user] = {
-     item: session.item,
-     helper: session.helper
+    if (restricted.includes(cmd) && !checkAccess(interaction.member)) {
+      return res.json(reply("not allowed", { flags: 64 }))
     }
 
-    await api(`/channels/${channel}`, "PATCH", {
-     permission_overwrites: [
-      { id: session.user, deny: "2048" }
-     ]
-    })
+    const cd = checkCooldown(user, cmd)
+    if (cd > 0) return res.json(reply(`wait ${cd}s`, { flags: 64 }))
 
-    await log(`@${session.user} borrowed **${session.item}** from <@${session.helper}>`)
-
-    return res.json({
-     type: 4,
-     data: { content: "item marked as given • channel locked" }
-    })
-   }
-
-   if (session.type === "return") {
-
-    delete borrowed[session.user]
-
-    await log(`@${session.user} returned **${session.item}** to <@${session.helper}>`)
-
-    await api(`/channels/${channel}`, "DELETE")
-
-    return res.json({
-     type: 4,
-     data: { content: "return completed" }
-    })
-   }
-  }
-
-  if (cmd === "decline") {
-
-   const session = sessions[channel]
-
-   if (!session) {
-    return res.json({ type: 4, data: { content: "not a session channel" } })
-   }
-
-   await log(`<@${session.helper}> declined **${session.item}** for <@${session.user}>`)
-
-   await api(`/channels/${channel}`, "DELETE")
-
-   return res.json({
-    type: 4,
-    data: { content: "request declined" }
-   })
-  }
-
-  if (cmd === "return") {
-
-   const info = borrowed[user]
-
-   if (!info) {
-    return res.json({ type: 4, data: { content: "nothing borrowed" } })
-   }
-
-   return res.json({
-    type: 4,
-    data: {
-     content: `return request for **${info.item}**`,
-     components: [{
-      type: 1,
-      components: [{
-       type: 2,
-       label: "Claim",
-       style: 1,
-       custom_id: `claim_${user}`
-      }]
-     }]
+    const spam = trackSpam(user)
+    if (spam > SPAM_LIMIT) {
+      await Users.updateOne({ user }, { $inc: { violations: 1, trust: -15 } })
+      await api(`/guilds/${interaction.guild_id}/members/${user}`, "PATCH", {
+        communication_disabled_until: new Date(Date.now() + 10 * 60000)
+      })
+      return res.json(reply("restricted for spam"))
     }
-   })
-  }
- }
 
- if (interaction.type === 3) {
+    if (cmd === "request") {
+      const data = await getUser(user)
+      if (data.trust < 20) return res.json(reply("access restricted", { flags: 64 }))
 
-  const id = interaction.data.custom_id
-  const helper = interaction.member.user.id
-  const helperName = interaction.member.user.username
-  const guild = interaction.guild_id
+      const item = interaction.data.options[0].value
 
-  if (id.startsWith("accept_")) {
+      await log({ user, action: "request", item })
 
-   const [_, user, item] = id.split("_")
-
-   if (Object.values(sessions).find(s => s.user === user && s.item === item)) {
-    return res.json({
-     type: 4,
-     data: { content: "already accepted", flags: 64 }
-    })
-   }
-
-   const number = nextTicket()
-   const name = `${interaction.member.user.username}-${number}`
-
-   const channel = await api(`/guilds/${guild}/channels`, "POST", {
-    name,
-    parent_id: CATEGORY_ID,
-    type: 0,
-    permission_overwrites: [
-     { id: guild, deny: "1024" },
-     { id: user, allow: "1024" },
-     { id: helper, allow: "1024" }
-    ]
-   }).then(r => r.json())
-
-   sessions[channel.id] = {
-    user,
-    helper,
-    item,
-    channel: channel.id,
-    type: "request",
-    messages: 0
-   }
-
-   await log(`<@${helper}> accepted **${item}** request from <@${user}>`)
-
-   return res.json({
-    type: 7,
-    data: {
-     content: `accepted by <@${helper}> • channel <#${channel.id}>`,
-     components: []
+      return res.json(reply(`request ${item}`, {
+        components: [{
+          type: 1,
+          components: [
+            { type: 2, label: "Accept", style: 3, custom_id: `accept_${user}_${item}` },
+            { type: 2, label: "Decline", style: 4, custom_id: `decline_${user}_${item}` }
+          ]
+        }]
+      }))
     }
-   })
-  }
 
-  if (id.startsWith("claim_")) {
+    if (cmd === "given") {
+      const session = await Session.findOne({ channel: interaction.channel_id })
+      if (!session) return res.json(reply("invalid"))
 
-   const user = id.split("_")[1]
-   const info = borrowed[user]
+      if (session.type === "request") {
+        const now = Date.now()
+        const due = now + BORROW_DURATION
 
-   const helper = interaction.member.user.id
+        await Borrow.insertOne({
+          user: session.user,
+          item: session.item,
+          helper: session.helper,
+          borrowedAt: now,
+          dueAt: due
+        })
 
-   if (helper !== info.helper) {
-    return res.json({
-     type: 4,
-     data: { content: "only original helper can claim", flags: 64 }
-    })
-   }
+        await Users.updateOne({ user: session.user }, { $inc: { totalBorrowed: 1 } })
 
-   const number = nextTicket()
-   const name = `return-${number}`
+        await log({ user: session.user, action: "borrow", item: session.item })
 
-   const channel = await api(`/guilds/${interaction.guild_id}/channels`, "POST", {
-    name,
-    parent_id: CATEGORY_ID,
-    type: 0,
-    permission_overwrites: [
-     { id: interaction.guild_id, deny: "1024" },
-     { id: user, allow: "1024" },
-     { id: helper, allow: "1024" }
-    ]
-   }).then(r => r.json())
+        return res.json(reply("completed"))
+      }
 
-   sessions[channel.id] = {
-    user,
-    helper,
-    item: info.item,
-    channel: channel.id,
-    type: "return",
-    messages: 0
-   }
+      if (session.type === "return") {
+        const info = await Borrow.findOne({ user: session.user })
+        const now = Date.now()
 
-   await log(`<@${helper}> claimed return of **${info.item}** from <@${user}>`)
+        const late = now > info.dueAt
 
-   return res.json({
-    type: 7,
-    data: {
-     content: `return channel created <#${channel.id}>`,
-     components: []
+        await Borrow.deleteOne({ user: session.user })
+
+        if (late) {
+          await Users.updateOne(
+            { user: session.user },
+            { $inc: { lateReturns: 1, trust: -10 } }
+          )
+        } else {
+          await Users.updateOne(
+            { user: session.user },
+            { $inc: { returnedOnTime: 1, trust: 5 } }
+          )
+        }
+
+        await log({
+          user: session.user,
+          action: late ? "late_return" : "return",
+          item: session.item
+        })
+
+        await api(`/channels/${interaction.channel_id}`, "DELETE")
+
+        return res.json(reply(late ? "returned late" : "returned"))
+      }
     }
-   })
+
+    if (cmd === "reminder") {
+      const target = interaction.data.options[0].value
+      const info = await Borrow.findOne({ user: target })
+
+      if (!info) return res.json(reply("none"))
+
+      const remaining = info.dueAt - Date.now()
+
+      if (remaining <= 0) {
+        return res.json(reply(`<@${target}> overdue return ${info.item}`))
+      }
+
+      return res.json(reply(
+        `<@${target}> return ${info.item}\ntime left ${formatTime(remaining)}`
+      ))
+    }
+
+    if (cmd === "borrowers") {
+      const list = await Borrow.find().toArray()
+      if (!list.length) return res.json(reply("none"))
+
+      const text = list.map(b => {
+        const left = b.dueAt - Date.now()
+        return `<@${b.user}> ${b.item} (${left > 0 ? formatTime(left) : "late"})`
+      }).join("\n")
+
+      return res.json(reply(text))
+    }
+
+    if (cmd === "return") {
+      const info = await Borrow.findOne({ user })
+      if (!info) return res.json(reply("none"))
+
+      return res.json(reply(`return ${info.item}`, {
+        components: [{
+          type: 1,
+          components: [{
+            type: 2,
+            label: "Claim",
+            style: 1,
+            custom_id: `claim_${user}`
+          }]
+        }]
+      }))
+    }
+
+    if (cmd === "cancel") {
+      await Session.deleteMany({ user })
+      return res.json(reply("cancelled"))
+    }
+
+    if (cmd === "ban-user") {
+      const target = interaction.data.options[0].value
+      await Banned.insertOne({ user: target })
+      return res.json(reply("banned"))
+    }
+
+    if (cmd === "search") {
+      const target = interaction.data.options[0].value
+      const info = await Borrow.findOne({ user: target })
+      return res.json(reply(info ? `has ${info.item}` : "none"))
+    }
+
+    if (cmd === "timeout") {
+      const target = interaction.data.options[0].value
+      const duration = interaction.data.options[1].value
+      await api(`/guilds/${interaction.guild_id}/members/${target}`, "PATCH", {
+        communication_disabled_until: new Date(Date.now() + duration * 60000)
+      })
+      return res.json(reply("timeout"))
+    }
+
+    if (cmd === "trusted") {
+      const target = interaction.data.options[0].value
+      await Users.updateOne({ user: target }, { $set: { trust: 90 } })
+      return res.json(reply("trusted"))
+    }
+
+    if (cmd === "questions") {
+      return res.json(reply("contact staff"))
+    }
+
+    if (cmd === "accept") {
+      const target = interaction.data.options[0].value
+      const item = interaction.data.options[1].value
+
+      const channel = await createChannel(
+        interaction.guild_id,
+        `ticket-${nextTicket()}`,
+        target,
+        user
+      )
+
+      await Session.insertOne({
+        channel: channel.id,
+        user: target,
+        helper: user,
+        item,
+        type: "request"
+      })
+
+      return res.json(reply(`accepted <#${channel.id}>`))
+    }
+
+    if (cmd === "decline") {
+      const target = interaction.data.options[0].value
+      await Session.deleteMany({ user: target })
+      return res.json(reply("declined"))
+    }
   }
- }
+
+  if (interaction.type === 3) {
+
+    const [action, ...args] = interaction.data.custom_id.split("_")
+    const helper = interaction.member.user.id
+
+    if (action === "accept") {
+      const [userId, item] = args
+
+      const channel = await createChannel(
+        interaction.guild_id,
+        `ticket-${nextTicket()}`,
+        userId,
+        helper
+      )
+
+      await Session.insertOne({
+        channel: channel.id,
+        user: userId,
+        helper,
+        item,
+        type: "request"
+      })
+
+      return res.json(update(`accepted <#${channel.id}>`, { components: [] }))
+    }
+
+    if (action === "claim") {
+      const userId = args[0]
+      const info = await Borrow.findOne({ user: userId })
+
+      const channel = await createChannel(
+        interaction.guild_id,
+        `return-${nextTicket()}`,
+        userId,
+        helper
+      )
+
+      await Session.insertOne({
+        channel: channel.id,
+        user: userId,
+        helper,
+        item: info.item,
+        type: "return"
+      })
+
+      return res.json(update(`created <#${channel.id}>`, { components: [] }))
+    }
+  }
 }
