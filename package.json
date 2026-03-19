@@ -1,9 +1,16 @@
 {
   "name": "discord-helper-bot",
   "version": "1.0.0",
+  "description": "High-performance bot with trust system, moderation, and borrow tracking",
+  "main": "index.js",
   "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "register": "node register.js"
+  },
   "dependencies": {
     "discord-interactions": "^3.4.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "mongodb": "^6.5.0"
   }
 }
