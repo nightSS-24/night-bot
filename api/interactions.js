@@ -42,10 +42,16 @@ const api = async (url, method = "GET", body) => {
   return res.json()
 }
 
-const reply = (content, extra = {}) => ({
-  type: 4,
-  data: { content, ...extra }
-})
+const followUp = async (interaction, content, extra = {}) => {
+  return fetch(
+    `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, ...extra })
+    }
+  )
+}
 
 const update = (content, extra = {}) => ({
   type: 7,
@@ -148,18 +154,26 @@ export default async function handler(req, res) {
   const user = interaction.member?.user?.id
 
   if (interaction.type === 2) {
+    res.json({ type: 5 })
 
     const cmd = interaction.data.name
 
     const banned = await Banned.findOne({ user })
-    if (banned) return res.json(reply("access denied", { flags: 64 }))
+    if (banned) {
+      await followUp(interaction, "access denied")
+      return
+    }
 
     if (restricted.includes(cmd) && !checkAccess(interaction.member)) {
-      return res.json(reply("not allowed", { flags: 64 }))
+      await followUp(interaction, "not allowed")
+      return
     }
 
     const cd = checkCooldown(user, cmd)
-    if (cd > 0) return res.json(reply(`wait ${cd}s`, { flags: 64 }))
+    if (cd > 0) {
+      await followUp(interaction, `wait ${cd}s`)
+      return
+    }
 
     const spam = trackSpam(user)
     if (spam > SPAM_LIMIT) {
@@ -167,18 +181,22 @@ export default async function handler(req, res) {
       await api(`/guilds/${interaction.guild_id}/members/${user}`, "PATCH", {
         communication_disabled_until: new Date(Date.now() + 10 * 60000)
       })
-      return res.json(reply("restricted for spam"))
+      await followUp(interaction, "restricted for spam")
+      return
     }
 
     if (cmd === "request") {
       const data = await getUser(user)
-      if (data.trust < 20) return res.json(reply("access restricted", { flags: 64 }))
+      if (data.trust < 20) {
+        await followUp(interaction, "access restricted")
+        return
+      }
 
       const item = interaction.data.options[0].value
 
       await log({ user, action: "request", item })
 
-      return res.json(reply(`request ${item}`, {
+      await followUp(interaction, `request ${item}`, {
         components: [{
           type: 1,
           components: [
@@ -186,12 +204,16 @@ export default async function handler(req, res) {
             { type: 2, label: "Decline", style: 4, custom_id: `decline_${user}_${item}` }
           ]
         }]
-      }))
+      })
+      return
     }
 
     if (cmd === "given") {
       const session = await Session.findOne({ channel: interaction.channel_id })
-      if (!session) return res.json(reply("invalid"))
+      if (!session) {
+        await followUp(interaction, "invalid")
+        return
+      }
 
       if (session.type === "request") {
         const now = Date.now()
@@ -209,7 +231,8 @@ export default async function handler(req, res) {
 
         await log({ user: session.user, action: "borrow", item: session.item })
 
-        return res.json(reply("completed"))
+        await followUp(interaction, "completed")
+        return
       }
 
       if (session.type === "return") {
@@ -240,7 +263,8 @@ export default async function handler(req, res) {
 
         await api(`/channels/${interaction.channel_id}`, "DELETE")
 
-        return res.json(reply(late ? "returned late" : "returned"))
+        await followUp(interaction, late ? "returned late" : "returned")
+        return
       }
     }
 
@@ -248,36 +272,49 @@ export default async function handler(req, res) {
       const target = interaction.data.options[0].value
       const info = await Borrow.findOne({ user: target })
 
-      if (!info) return res.json(reply("none"))
+      if (!info) {
+        await followUp(interaction, "none")
+        return
+      }
 
       const remaining = info.dueAt - Date.now()
 
       if (remaining <= 0) {
-        return res.json(reply(`<@${target}> overdue return ${info.item}`))
+        await followUp(interaction, `<@${target}> overdue return ${info.item}`)
+        return
       }
 
-      return res.json(reply(
+      await followUp(
+        interaction,
         `<@${target}> return ${info.item}\ntime left ${formatTime(remaining)}`
-      ))
+      )
+      return
     }
 
     if (cmd === "borrowers") {
       const list = await Borrow.find().toArray()
-      if (!list.length) return res.json(reply("none"))
+      if (!list.length) {
+        await followUp(interaction, "none")
+        return
+      }
 
       const text = list.map(b => {
         const left = b.dueAt - Date.now()
         return `<@${b.user}> ${b.item} (${left > 0 ? formatTime(left) : "late"})`
       }).join("\n")
 
-      return res.json(reply(text))
+      await followUp(interaction, text)
+      return
     }
 
     if (cmd === "return") {
       const info = await Borrow.findOne({ user })
-      if (!info) return res.json(reply("none"))
+      if (!info) {
+        await followUp(interaction, "none")
+        return
+      }
 
-      return res.json(reply(`return ${info.item}`, {
+      await followUp(interaction, `return ${info.item}`, {
         components: [{
           type: 1,
           components: [{
@@ -287,24 +324,28 @@ export default async function handler(req, res) {
             custom_id: `claim_${user}`
           }]
         }]
-      }))
+      })
+      return
     }
 
     if (cmd === "cancel") {
       await Session.deleteMany({ user })
-      return res.json(reply("cancelled"))
+      await followUp(interaction, "cancelled")
+      return
     }
 
     if (cmd === "ban-user") {
       const target = interaction.data.options[0].value
       await Banned.insertOne({ user: target })
-      return res.json(reply("banned"))
+      await followUp(interaction, "banned")
+      return
     }
 
     if (cmd === "search") {
       const target = interaction.data.options[0].value
       const info = await Borrow.findOne({ user: target })
-      return res.json(reply(info ? `has ${info.item}` : "none"))
+      await followUp(interaction, info ? `has ${info.item}` : "none")
+      return
     }
 
     if (cmd === "timeout") {
@@ -313,17 +354,20 @@ export default async function handler(req, res) {
       await api(`/guilds/${interaction.guild_id}/members/${target}`, "PATCH", {
         communication_disabled_until: new Date(Date.now() + duration * 60000)
       })
-      return res.json(reply("timeout"))
+      await followUp(interaction, "timeout")
+      return
     }
 
     if (cmd === "trusted") {
       const target = interaction.data.options[0].value
       await Users.updateOne({ user: target }, { $set: { trust: 90 } })
-      return res.json(reply("trusted"))
+      await followUp(interaction, "trusted")
+      return
     }
 
     if (cmd === "questions") {
-      return res.json(reply("contact staff"))
+      await followUp(interaction, "contact staff")
+      return
     }
 
     if (cmd === "accept") {
@@ -345,13 +389,15 @@ export default async function handler(req, res) {
         type: "request"
       })
 
-      return res.json(reply(`accepted <#${channel.id}>`))
+      await followUp(interaction, `accepted <#${channel.id}>`)
+      return
     }
 
     if (cmd === "decline") {
       const target = interaction.data.options[0].value
       await Session.deleteMany({ user: target })
-      return res.json(reply("declined"))
+      await followUp(interaction, "declined")
+      return
     }
   }
 
