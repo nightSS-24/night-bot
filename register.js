@@ -1,4 +1,5 @@
 import fetch from "node-fetch";
+import "dotenv/config";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const APP_ID = process.env.APP_ID;
