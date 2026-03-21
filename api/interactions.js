@@ -11,11 +11,17 @@ const {
   HELPER_ROLE
 } = process.env
 
-const client = new MongoClient(MONGO_URI)
-if (!client.topology || !client.topology.isConnected()) {
-  await client.connect()
+let client
+let db
+
+if (!global._mongoClient) {
+  client = new MongoClient(MONGO_URI)
+  global._mongoClient = client.connect()
 }
 
+await global._mongoClient
+client = new MongoClient(MONGO_URI)
+db = client.db("system")
 const db = client.db("system")
 
 const Borrow = db.collection("borrowed")
