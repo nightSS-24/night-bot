@@ -11,18 +11,20 @@ const {
   HELPER_ROLE
 } = process.env
 
-let client
-let db
+const MONGO_URI = process.env.MONGODB_URI;
 
-if (!global._mongoClient) {
-  client = new MongoClient(MONGO_URI)
-  global._mongoClient = client.connect()
+let client;
+let db;
+
+if (!global._mongo) {
+  client = new MongoClient(MONGO_URI);
+  global._mongo = client.connect();
 }
 
-await global._mongoClient
-client = new MongoClient(MONGO_URI)
-db = client.db("system")
-const db = client.db("system")
+await global._mongo;
+
+client = await global._mongo;
+db = client.db("system");
 
 const Borrow = db.collection("borrowed")
 const Session = db.collection("sessions")
