@@ -11,9 +11,6 @@ const {
   HELPER_ROLE
 } = process.env
 
-console.log("MONGO_URI:", NightBot_MONGODB_URI);
-console.log("ALL ENV KEYS:", Object.keys(process.env));
-
 let client;
 let db;
 
