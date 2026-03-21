@@ -11,14 +11,14 @@ const {
   HELPER_ROLE
 } = process.env
 
-console.log("MONGO_URI:", MONGO_URI);
+console.log("MONGO_URI:", NightBot_MONGODB_URI);
 console.log("ALL ENV KEYS:", Object.keys(process.env));
 
 let client;
 let db;
 
 if (!global._mongo) {
-  client = new MongoClient(MONGO_URI);
+  client = new MongoClient(NightBot_MONGODB_URI);
   global._mongo = client.connect();
 }
 
