@@ -6,7 +6,7 @@ const {
   BOT_TOKEN,
   CATEGORY_ID,
   LOG_CHANNEL,
-  MONGO_URI,
+  NightBot_MONGODB_URI,
   COMMUNITY_ROLE,
   HELPER_ROLE
 } = process.env
