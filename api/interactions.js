@@ -11,8 +11,6 @@ const {
   HELPER_ROLE
 } = process.env
 
-const MONGO_URI = process.env.MONGODB_URI;
-
 let client;
 let db;
 
