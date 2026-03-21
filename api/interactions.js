@@ -10,6 +10,7 @@ const {
   COMMUNITY_ROLE,
   HELPER_ROLE
 } = process.env
+
 console.log("MONGO_URI:", MONGO_URI);
 
 let client;
