@@ -25,7 +25,7 @@ const commands = [
 
   {
     name: "reminder",
-    description: "Check remaining time for a user",
+    description: "Check remaining time",
     options: [
       { name: "user", description: "Target user", type: 6, required: true }
     ]
@@ -33,7 +33,7 @@ const commands = [
 
   {
     name: "ban-user",
-    description: "Ban a user from system",
+    description: "Ban a user",
     options: [
       { name: "user", description: "User to ban", type: 6, required: true }
     ]
@@ -41,7 +41,7 @@ const commands = [
 
   {
     name: "search",
-    description: "Check what a user has borrowed",
+    description: "Check borrowed item",
     options: [
       { name: "user", description: "Target user", type: 6, required: true }
     ]
@@ -51,35 +51,35 @@ const commands = [
     name: "timeout",
     description: "Timeout a user",
     options: [
-      { name: "user", description: "User to timeout", type: 6, required: true },
-      { name: "minutes", description: "Duration", type: 4, required: true }
+      { name: "user", type: 6, required: true },
+      { name: "minutes", type: 4, required: true }
     ]
   },
 
   {
     name: "trusted",
-    description: "Mark user as trusted",
+    description: "Mark user trusted",
     options: [
-      { name: "user", description: "Target user", type: 6, required: true }
+      { name: "user", type: 6, required: true }
     ]
   },
 
-  { name: "questions", description: "Get help from staff" },
+  { name: "questions", description: "Get help" },
 
   {
     name: "accept",
-    description: "Accept a request manually",
+    description: "Accept manually",
     options: [
-      { name: "user", description: "User", type: 6, required: true },
-      { name: "item", description: "Item", type: 3, required: true }
+      { name: "user", type: 6, required: true },
+      { name: "item", type: 3, required: true }
     ]
   },
 
   {
     name: "decline",
-    description: "Decline a request manually",
+    description: "Decline manually",
     options: [
-      { name: "user", description: "User", type: 6, required: true }
+      { name: "user", type: 6, required: true }
     ]
   }
 ];
@@ -96,10 +96,8 @@ async function register() {
     body: JSON.stringify(commands)
   });
 
-  const data = await res.json();
-
   console.log("Status:", res.status);
-  console.log(data);
+  console.log(await res.json());
 }
 
 register();
