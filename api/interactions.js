@@ -12,6 +12,7 @@ const {
 } = process.env
 
 console.log("MONGO_URI:", MONGO_URI);
+console.log("ALL ENV KEYS:", Object.keys(process.env));
 
 let client;
 let db;
