@@ -4,7 +4,7 @@ import { MongoClient } from "mongodb"
 // ===== ENV =====
 const { PUBLIC_KEY, NightBot_MONGODB_URI } = process.env
 
-// ===== Mongo (cached) =====
+// ===== Mongo (cached connection) =====
 let client
 let db
 
@@ -18,16 +18,25 @@ async function getDB() {
   return db
 }
 
-// ===== Send Followup =====
+// ===== Follow-up =====
 async function sendFollowUp(interaction, content) {
-  await fetch(
-    `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content })
+  try {
+    const res = await fetch(
+      `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content })
+      }
+    )
+
+    if (!res.ok) {
+      console.error("FollowUp failed:", await res.text())
     }
-  )
+
+  } catch (err) {
+    console.error("FollowUp ERROR:", err)
+  }
 }
 
 // ===== Command Logic =====
@@ -118,12 +127,15 @@ async function handleCommand(interaction) {
 
 // ===== MAIN HANDLER =====
 export default async function handler(req, res) {
+  console.log("⚡ HIT ENDPOINT")
+
   try {
     const signature = req.headers["x-signature-ed25519"]
     const timestamp = req.headers["x-signature-timestamp"]
-    const body = JSON.stringify(req.body)
 
-    // ✅ VERIFY
+    // IMPORTANT: raw body fix
+    const body = req.rawBody || JSON.stringify(req.body)
+
     if (!verifyKey(body, signature, timestamp, PUBLIC_KEY)) {
       return res.status(401).send("Invalid request")
     }
@@ -132,15 +144,15 @@ export default async function handler(req, res) {
 
     // ===== PING =====
     if (interaction.type === 1) {
-      return res.json({ type: 1 })
+      return res.status(200).send({ type: 1 })
     }
 
     // ===== COMMAND =====
     if (interaction.type === 2) {
-      // ✅ IMMEDIATE RESPONSE (THIS FIXES "thinking...")
-      res.json({
-        type: 5 // DEFERRED RESPONSE
-      })
+      res.setHeader("Content-Type", "application/json")
+
+      // 🔥 instant response (fixes thinking bug)
+      res.status(200).send({ type: 5 })
 
       // run async AFTER responding
       handleCommand(interaction)
