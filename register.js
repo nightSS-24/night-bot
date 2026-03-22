@@ -18,7 +18,7 @@ const commands = [
   },
   {
     name: "accept",
-    description: "Accept request",
+    description: "Accept a request",
     options: [
       {
         name: "user",
@@ -30,7 +30,7 @@ const commands = [
   },
   {
     name: "decline",
-    description: "Decline request",
+    description: "Decline a request",
     options: [
       {
         name: "user",
@@ -42,7 +42,7 @@ const commands = [
   },
   {
     name: "list",
-    description: "List active loans"
+    description: "Show active loans"
   }
 ]
 
