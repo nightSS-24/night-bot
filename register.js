@@ -6,25 +6,43 @@ const { BOT_TOKEN, APP_ID } = process.env
 const commands = [
   {
     name: "request",
-    description: "Request to borrow an item",
+    description: "Request an item",
     options: [
       {
         name: "item",
-        description: "Item you want",
+        description: "Item name",
         type: 3,
         required: true
       }
     ]
   },
-
   {
-    name: "borrowers",
-    description: "List all borrowers"
+    name: "accept",
+    description: "Accept request",
+    options: [
+      {
+        name: "user",
+        description: "User ID",
+        type: 3,
+        required: true
+      }
+    ]
   },
-
   {
-    name: "cancel",
-    description: "Cancel your request"
+    name: "decline",
+    description: "Decline request",
+    options: [
+      {
+        name: "user",
+        description: "User ID",
+        type: 3,
+        required: true
+      }
+    ]
+  },
+  {
+    name: "list",
+    description: "List active loans"
   }
 ]
 
@@ -41,10 +59,8 @@ async function register() {
     }
   )
 
-  const data = await res.json()
-
   console.log("STATUS:", res.status)
-  console.log(data)
+  console.log(await res.json())
 }
 
 register()
