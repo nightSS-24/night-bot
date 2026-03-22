@@ -1,143 +1,154 @@
 import { verifyKey } from "discord-interactions"
 import { MongoClient } from "mongodb"
 
-// ENV
-const {
-  PUBLIC_KEY,
-  BOT_TOKEN,
-  CATEGORY_ID,
-  LOG_CHANNEL,
-  NightBot_MONGODB_URI,
-  COMMUNITY_ROLE,
-  HELPER_ROLE
-} = process.env
+// ===== ENV =====
+const { PUBLIC_KEY, NightBot_MONGODB_URI } = process.env
 
-// ---------- MONGO FIX (NO HANG) ----------
+// ===== Mongo (cached) =====
 let client
 let db
 
 async function getDB() {
-  if (!global._mongoClient) {
-    const newClient = new MongoClient(NightBot_MONGODB_URI)
-    await newClient.connect()
-    global._mongoClient = newClient
+  if (!client) {
+    client = new MongoClient(NightBot_MONGODB_URI)
+    await client.connect()
+    db = client.db("system")
     console.log("✅ Mongo Connected")
   }
-
-  client = global._mongoClient
-  db = client.db("system")
   return db
 }
 
-// ---------- DISCORD HELPERS ----------
-const followUp = async (interaction, content) => {
-  try {
-    const res = await fetch(
-      `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content })
-      }
-    )
-    console.log("FollowUp:", res.status)
-  } catch (err) {
-    console.error("FollowUp ERROR:", err)
-  }
+// ===== Send Followup =====
+async function sendFollowUp(interaction, content) {
+  await fetch(
+    `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content })
+    }
+  )
 }
 
-// ---------- MAIN COMMAND ----------
+// ===== Command Logic =====
 async function handleCommand(interaction) {
-  console.log("⚡ COMMAND RECEIVED")
-
   try {
     const db = await getDB()
-
     const Borrow = db.collection("borrowed")
-    const Users = db.collection("users")
 
-    const user = interaction.member?.user?.id
+    const userId = interaction.member.user.id
     const cmd = interaction.data.name
 
-    console.log("CMD:", cmd)
-
-    // -------- BASIC COMMANDS --------
-
+    // ===== REQUEST =====
     if (cmd === "request") {
-      const item = interaction.data.options?.[0]?.value || "unknown"
+      const item = interaction.data.options?.[0]?.value
 
       await Borrow.insertOne({
-        user,
+        userId,
         item,
+        status: "pending",
         time: new Date()
       })
 
-      return await followUp(interaction, `✅ request sent for ${item}`)
+      await sendFollowUp(interaction, `✅ Requested **${item}**`)
     }
 
-    if (cmd === "borrowers") {
-      const list = await Borrow.find().toArray()
+    // ===== ACCEPT =====
+    else if (cmd === "accept") {
+      const target = interaction.data.options?.[0]?.value
 
-      if (!list.length) {
-        return await followUp(interaction, "no borrowers")
+      const req = await Borrow.findOne({
+        userId: target,
+        status: "pending"
+      })
+
+      if (!req) {
+        return await sendFollowUp(interaction, "❌ No request found")
       }
 
-      const text = list.map(b => `<@${b.user}> → ${b.item}`).join("\n")
-      return await followUp(interaction, text)
+      await Borrow.updateOne(
+        { _id: req._id },
+        { $set: { status: "accepted" } }
+      )
+
+      await sendFollowUp(interaction, `✅ Accepted **${req.item}**`)
     }
 
-    if (cmd === "cancel") {
-      await Borrow.deleteMany({ user })
-      return await followUp(interaction, "cancelled ✅")
+    // ===== DECLINE =====
+    else if (cmd === "decline") {
+      const target = interaction.data.options?.[0]?.value
+
+      const req = await Borrow.findOne({
+        userId: target,
+        status: "pending"
+      })
+
+      if (!req) {
+        return await sendFollowUp(interaction, "❌ No request found")
+      }
+
+      await Borrow.updateOne(
+        { _id: req._id },
+        { $set: { status: "declined" } }
+      )
+
+      await sendFollowUp(interaction, `🚫 Declined **${req.item}**`)
     }
 
-    // fallback
-    return await followUp(interaction, "working ✅")
+    // ===== LIST =====
+    else if (cmd === "list") {
+      const list = await Borrow.find({ status: "accepted" }).toArray()
+
+      if (!list.length) {
+        return await sendFollowUp(interaction, "📭 No active loans")
+      }
+
+      const text = list
+        .map(x => `<@${x.userId}> → **${x.item}**`)
+        .join("\n")
+
+      await sendFollowUp(interaction, `📜 Loans:\n${text}`)
+    }
+
   } catch (err) {
     console.error("🔥 COMMAND ERROR:", err)
-    return await followUp(interaction, "error happened ❌")
+    await sendFollowUp(interaction, "❌ Error happened")
   }
 }
 
-// ---------- HANDLER ----------
+// ===== MAIN HANDLER =====
 export default async function handler(req, res) {
   try {
     const signature = req.headers["x-signature-ed25519"]
     const timestamp = req.headers["x-signature-timestamp"]
     const body = JSON.stringify(req.body)
 
-    const isValid = verifyKey(body, signature, timestamp, PUBLIC_KEY)
-    console.log("VERIFY:", isValid)
-
-    if (!isValid) {
-      return res.status(401).send("invalid request")
+    // ✅ VERIFY
+    if (!verifyKey(body, signature, timestamp, PUBLIC_KEY)) {
+      return res.status(401).send("Invalid request")
     }
 
     const interaction = req.body
 
-    // ping
+    // ===== PING =====
     if (interaction.type === 1) {
       return res.json({ type: 1 })
     }
 
-    // commands
+    // ===== COMMAND =====
     if (interaction.type === 2) {
-      // respond instantly
-      res.json({ type: 5 })
+      // ✅ IMMEDIATE RESPONSE (THIS FIXES "thinking...")
+      res.json({
+        type: 5 // DEFERRED RESPONSE
+      })
 
-      // run async
+      // run async AFTER responding
       handleCommand(interaction)
-
       return
-    }
-
-    // buttons
-    if (interaction.type === 3) {
-      return res.json({ type: 6 })
     }
 
   } catch (err) {
     console.error("🔥 HANDLER ERROR:", err)
-    return res.status(500).send("server error")
+    return res.status(500).send("Server error")
   }
 }
