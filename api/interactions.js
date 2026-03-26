@@ -1,56 +1,59 @@
 import { verifyKey } from "discord-interactions"
 import { MongoClient } from "mongodb"
 
-// ===== ENV =====
 const { PUBLIC_KEY, NightBot_MONGODB_URI } = process.env
 
-// ===== Mongo (cached connection) =====
-let client
-let db
+let client = null
+let db = null
 
 async function getDB() {
   if (!client) {
     client = new MongoClient(NightBot_MONGODB_URI)
     await client.connect()
     db = client.db("system")
-    console.log("✅ Mongo Connected")
   }
   return db
 }
 
-// ===== Follow-up =====
 async function sendFollowUp(interaction, content) {
   try {
-    const res = await fetch(
+    const response = await fetch(
       `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json"
+        },
         body: JSON.stringify({ content })
       }
     )
 
-    if (!res.ok) {
-      console.error("FollowUp failed:", await res.text())
+    if (!response.ok) {
+      const text = await response.text()
+      console.error(text)
     }
-
-  } catch (err) {
-    console.error("FollowUp ERROR:", err)
+  } catch (error) {
+    console.error(error)
   }
 }
 
-// ===== Command Logic =====
 async function handleCommand(interaction) {
   try {
-    const db = await getDB()
-    const Borrow = db.collection("borrowed")
+    const database = await getDB()
+    const Borrow = database.collection("borrowed")
 
-    const userId = interaction.member.user.id
-    const cmd = interaction.data.name
+    const userId =
+      interaction.member?.user?.id || interaction.user?.id
 
-    // ===== REQUEST =====
-    if (cmd === "request") {
+    const command = interaction.data?.name
+
+    if (command === "request") {
       const item = interaction.data.options?.[0]?.value
+
+      if (!item) {
+        await sendFollowUp(interaction, "Invalid item")
+        return
+      }
 
       await Borrow.insertOne({
         userId,
@@ -59,108 +62,118 @@ async function handleCommand(interaction) {
         time: new Date()
       })
 
-      await sendFollowUp(interaction, `✅ Requested **${item}**`)
+      await sendFollowUp(interaction, `Requested ${item}`)
     }
 
-    // ===== ACCEPT =====
-    else if (cmd === "accept") {
+    else if (command === "accept") {
       const target = interaction.data.options?.[0]?.value
 
-      const req = await Borrow.findOne({
+      if (!target) {
+        await sendFollowUp(interaction, "Invalid user")
+        return
+      }
+
+      const request = await Borrow.findOne({
         userId: target,
         status: "pending"
       })
 
-      if (!req) {
-        return await sendFollowUp(interaction, "❌ No request found")
+      if (!request) {
+        await sendFollowUp(interaction, "No request found")
+        return
       }
 
       await Borrow.updateOne(
-        { _id: req._id },
+        { _id: request._id },
         { $set: { status: "accepted" } }
       )
 
-      await sendFollowUp(interaction, `✅ Accepted **${req.item}**`)
+      await sendFollowUp(interaction, `Accepted ${request.item}`)
     }
 
-    // ===== DECLINE =====
-    else if (cmd === "decline") {
+    else if (command === "decline") {
       const target = interaction.data.options?.[0]?.value
 
-      const req = await Borrow.findOne({
+      if (!target) {
+        await sendFollowUp(interaction, "Invalid user")
+        return
+      }
+
+      const request = await Borrow.findOne({
         userId: target,
         status: "pending"
       })
 
-      if (!req) {
-        return await sendFollowUp(interaction, "❌ No request found")
+      if (!request) {
+        await sendFollowUp(interaction, "No request found")
+        return
       }
 
       await Borrow.updateOne(
-        { _id: req._id },
+        { _id: request._id },
         { $set: { status: "declined" } }
       )
 
-      await sendFollowUp(interaction, `🚫 Declined **${req.item}**`)
+      await sendFollowUp(interaction, `Declined ${request.item}`)
     }
 
-    // ===== LIST =====
-    else if (cmd === "list") {
-      const list = await Borrow.find({ status: "accepted" }).toArray()
+    else if (command === "list") {
+      const list = await Borrow.find({
+        status: "accepted"
+      }).toArray()
 
       if (!list.length) {
-        return await sendFollowUp(interaction, "📭 No active loans")
+        await sendFollowUp(interaction, "No active loans")
+        return
       }
 
       const text = list
-        .map(x => `<@${x.userId}> → **${x.item}**`)
+        .map(entry => `<@${entry.userId}> -> ${entry.item}`)
         .join("\n")
 
-      await sendFollowUp(interaction, `📜 Loans:\n${text}`)
+      await sendFollowUp(interaction, `Loans:\n${text}`)
     }
-
-  } catch (err) {
-    console.error("🔥 COMMAND ERROR:", err)
-    await sendFollowUp(interaction, "❌ Error happened")
+  } catch (error) {
+    console.error(error)
+    await sendFollowUp(interaction, "Error occurred")
   }
 }
 
-// ===== MAIN HANDLER =====
 export default async function handler(req, res) {
-  console.log("⚡ HIT ENDPOINT")
-
   try {
     const signature = req.headers["x-signature-ed25519"]
     const timestamp = req.headers["x-signature-timestamp"]
 
-    // IMPORTANT: raw body fix
-    const body = req.rawBody || JSON.stringify(req.body)
+    const rawBody = req.rawBody
+      ? req.rawBody.toString()
+      : JSON.stringify(req.body)
 
-    if (!verifyKey(body, signature, timestamp, PUBLIC_KEY)) {
+    const isValid = verifyKey(
+      rawBody,
+      signature,
+      timestamp,
+      PUBLIC_KEY
+    )
+
+    if (!isValid) {
       return res.status(401).send("Invalid request")
     }
 
     const interaction = req.body
 
-    // ===== PING =====
     if (interaction.type === 1) {
-      return res.status(200).send({ type: 1 })
+      return res.status(200).json({ type: 1 })
     }
 
-    // ===== COMMAND =====
     if (interaction.type === 2) {
-      res.setHeader("Content-Type", "application/json")
-
-      // 🔥 instant response (fixes thinking bug)
-      res.status(200).send({ type: 5 })
-
-      // run async AFTER responding
+      res.status(200).json({ type: 5 })
       handleCommand(interaction)
       return
     }
 
-  } catch (err) {
-    console.error("🔥 HANDLER ERROR:", err)
+    return res.status(400).send("Unhandled interaction")
+  } catch (error) {
+    console.error(error)
     return res.status(500).send("Server error")
   }
 }
