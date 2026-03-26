@@ -7,7 +7,7 @@ export const config = {
   }
 }
 
-const { PUBLIC_KEY, NightBot_MONGODB_URI } = process.env
+const { PUBLIC_KEY, MONGODB_URI } = process.env
 
 let client = null
 let db = null
