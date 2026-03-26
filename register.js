@@ -1,4 +1,3 @@
-import fetch from "node-fetch"
 import "dotenv/config"
 
 const { BOT_TOKEN, APP_ID } = process.env
@@ -47,20 +46,26 @@ const commands = [
 ]
 
 async function register() {
-  const res = await fetch(
-    `https://discord.com/api/v10/applications/${APP_ID}/commands`,
-    {
-      method: "PUT",
-      headers: {
-        Authorization: `Bot ${BOT_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(commands)
-    }
-  )
+  try {
+    const response = await fetch(
+      `https://discord.com/api/v10/applications/${APP_ID}/commands`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bot ${BOT_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(commands)
+      }
+    )
 
-  console.log("STATUS:", res.status)
-  console.log(await res.json())
+    const data = await response.json()
+
+    console.log("Status:", response.status)
+    console.log(data)
+  } catch (error) {
+    console.error(error)
+  }
 }
 
 register()
