@@ -1,6 +1,12 @@
 import { verifyKey } from "discord-interactions"
 import { MongoClient } from "mongodb"
 
+export const config = {
+  api: {
+    bodyParser: false
+  }
+}
+
 const { PUBLIC_KEY, NightBot_MONGODB_URI } = process.env
 
 let client = null
@@ -13,6 +19,19 @@ async function getDB() {
     db = client.db("system")
   }
   return db
+}
+
+async function getRawBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = ""
+
+    req.on("data", chunk => {
+      data += chunk
+    })
+
+    req.on("end", () => resolve(data))
+    req.on("error", reject)
+  })
 }
 
 async function sendFollowUp(interaction, content) {
@@ -118,9 +137,9 @@ async function handleCommand(interaction) {
     }
 
     else if (command === "list") {
-      const list = await Borrow.find({
-        status: "accepted"
-      }).toArray()
+      const list = await Borrow
+        .find({ status: "accepted" })
+        .toArray()
 
       if (!list.length) {
         await sendFollowUp(interaction, "No active loans")
@@ -144,9 +163,7 @@ export default async function handler(req, res) {
     const signature = req.headers["x-signature-ed25519"]
     const timestamp = req.headers["x-signature-timestamp"]
 
-    const rawBody = req.rawBody
-      ? req.rawBody.toString()
-      : JSON.stringify(req.body)
+    const rawBody = await getRawBody(req)
 
     const isValid = verifyKey(
       rawBody,
@@ -159,7 +176,7 @@ export default async function handler(req, res) {
       return res.status(401).send("Invalid request")
     }
 
-    const interaction = req.body
+    const interaction = JSON.parse(rawBody)
 
     if (interaction.type === 1) {
       return res.status(200).json({ type: 1 })
