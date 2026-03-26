@@ -4,13 +4,15 @@
   "description": "High-performance bot with trust system, moderation, and borrow tracking",
   "main": "index.js",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node index.js",
     "register": "node register.js"
   },
   "dependencies": {
     "discord-interactions": "^3.4.0",
-    "node-fetch": "^3.3.2",
     "mongodb": "^6.5.0"
   }
 }
